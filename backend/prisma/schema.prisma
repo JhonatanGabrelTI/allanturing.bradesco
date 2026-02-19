@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model ConfiguracaoCobranca {
+  id                String   @id @default(uuid())
+  descricao         String   @default("Configuração Principal")
+  cnpjRaiz          String   @default("123456789") @map("cnpj_raiz")
+  filial            String   @default("0001")
+  controle          String   @default("95")
+  agencia           String   @default("2856")
+  conta             String   @default("222652")
+  carteira          String   @default("09")
+  negociacao        String   @default("285600000000222652")
+  ambiente          String   @default("sandbox")
+  
+  percentualMulta   Float    @default(2.00) @map("percentual_multa")
+  percentualJuros   Float    @default(1.00) @map("percentual_juros")
+  diasProtesto      Int      @default(3) @map("dias_protesto")
+  tipoPrazoProtesto Int      @default(2) @map("tipo_prazo_protesto")
+  negativacaoAuto   Boolean  @default(false) @map("negativacao_auto")
+  
+  clientId          String   @default("client_id_demo")
+  clientSecret      String   @default("secret_demo")
+  
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  
+  boletos           Boleto[]
+  
+  @@map("configuracoes_cobranca")
+}
+
+model ClientePagador {
+  id            String    @id @default(uuid())
+  nome          String
+  tipoDocumento String    @default("2") @map("tipo_documento")
+  documento     String    @unique
+  email         String?
+  telefone      String?
+  
+  logradouro    String
+  numero        String
+  complemento   String?
+  bairro        String
+  cidade        String
+  uf            String
+  cep           String
+  
+  aceite        String    @default("N")
+  
+  boletos       Boleto[]
+  createdAt     DateTime  @default(now()) @map("created_at")
+  
+  @@map("clientes_pagador")
+}
+
+model Boleto {
+  id                    String    @id @default(uuid())
+  configuracaoId        String    @map("configuracao_id")
+  clienteId             String    @map("cliente_id")
+  
+  nossoNumero           String    @unique @map("nosso_numero")
+  seuNumero             String    @map("seu_numero")
+  valorNominal          Float     @map("valor_nominal")
+  dataEmissao           DateTime  @map("data_emissao")
+  dataVencimento        DateTime  @map("data_vencimento")
+  especieDocumento      String    @default("02") @map("especie_documento")
+  
+  linhaDigitavel        String?   @map("linha_digitavel")
+  codigoBarras          String?   @map("codigo_barras")
+  statusCodigo          String    @default("01") @map("status_codigo")
+  statusDescricao       String    @default("A VENCER/VENCIDO") @map("status_descricao")
+  
+  protestoSolicitado    Boolean   @default(false) @map("protesto_solicitado")
+  dataProtesto          DateTime? @map("data_protesto")
+  baixado               Boolean   @default(false)
+  dataBaixa             DateTime? @map("data_baixa")
+  dataPagamento         DateTime? @map("data_pagamento")
+  valorPago             Float?    @map("valor_pago")
+  
+  notificadoEmissao     Boolean   @default(false) @map("notificado_emissao")
+  notificadoVencimento  Boolean   @default(false) @map("notificado_vencimento")
+  notificadoAtraso      Boolean   @default(false) @map("notificado_atraso")
+  
+  configuracao          ConfiguracaoCobranca @relation(fields: [configuracaoId], references: [id])
+  cliente               ClientePagador       @relation(fields: [clienteId], references: [id])
+  historico             HistoricoStatus[]
+  
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+  
+  @@index([statusCodigo, dataVencimento])
+  @@map("boletos")
+}
+
+model HistoricoStatus {
+  id            String   @id @default(uuid())
+  boletoId      String   @map("boleto_id")
+  statusAnterior String? @map("status_anterior")
+  statusNovo    String   @map("status_novo")
+  dataMudanca   DateTime @default(now()) @map("data_mudanca")
+  origem        String
+  observacao    String?
+  
+  boleto        Boleto   @relation(fields: [boletoId], references: [id], onDelete: Cascade)
+  
+  @@map("historico_status")
+}
+
+model WebhookRecebido {
+  id              String   @id @default(uuid())
+  tipoEvento      String   @map("tipo_evento")
+  payload         String   @map("payload")
+  nossoNumero     String?  @map("nosso_numero")
+  processado      Boolean  @default(false)
+  createdAt       DateTime @default(now()) @map("created_at")
+  
+  @@map("webhooks_recebidos")
+}
