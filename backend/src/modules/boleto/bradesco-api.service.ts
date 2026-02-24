@@ -104,31 +104,45 @@ export class BradescoApiService {
     }
 
     private mockRegistrar(payload: any) {
-        const nossoNumero = Math.floor(10000000000 + Math.random() * 90000000000);
-        // Gera linha digitável e código de barras fictícios compatíveis com o layout
-        const valor = payload.vnmnalTitloCobr ? payload.vnmnalTitloCobr.toString().padStart(10, '0') : '0000000000';
+        // Gera um nosso número fictício de 10 dígitos (padrão Bradesco)
+        const nossoNumero = Math.floor(1000000000 + Math.random() * 9000000000);
+        const nossoNumeroStr = nossoNumero.toString().padStart(10, '0');
+
+        // Valor em centavos enviado pelo service (vlNominalTitulo)
+        const valorCentavos = payload.vlNominalTitulo || 0;
+        const valorPadded = valorCentavos.toString().padStart(10, '0');
+
+        // Fator de vencimento (dias desde 07/10/1997 até hoje, simplificado)
+        const base = new Date('1997-10-07').getTime();
+        const fatorVencimento = Math.floor((Date.now() - base) / (1000 * 60 * 60 * 24));
+
+        // Código de barras fictício: BBBMC.NNNNN NNNNN.BBBBBB BBBBB.BBBBB D FFFFF$$$$$$$$$$$
+        const cdBarras = `23791${fatorVencimento}${valorPadded}2345${nossoNumeroStr}8901234567`;
+
+        // Linha digitável no formato Bradesco: CAMPO1.DV CAMPO2.DV CAMPO3.DV DV FATORVALOR
+        const linhaDigitavel = `23790.${nossoNumeroStr.substring(0, 5)}0 ${nossoNumeroStr.substring(5)}.901180 28009.${fatorVencimento} ${fatorVencimento % 10} ${fatorVencimento}${valorPadded}`;
 
         return {
-            cidtfdProdCobr: payload.cidtfdProdCobr,
-            cnegocCobr: payload.cnegocCobr,
-            nuTituloGerado: nossoNumero, // Mantendo propriedade interna para compatibilidade, mas o real vem abaixo
-            // Campos específicos do layout do usuário
-            cdBarras: `237912340${valor}08560912345678901234567890`, // Mapped to internal interface
-            linhaDigitavel: `23791.23456 ${nossoNumero.toString().substring(0, 5)}.${nossoNumero.toString().substring(5)} 89012.345678 1 1234${valor}`,
+            // Campos principais consumidos pelo boleto.service.ts
+            nuTituloGerado: nossoNumero,
+            cdBarras,
+            linhaDigitavel,
 
-            // Exemplo de resposta (JSON) fornecido pelo usuário
-            codBarras10: `237912340${valor}08560912345678901234567890`,
-            linhaDig10: `23791.23456 ${nossoNumero.toString().substring(0, 5)}.${nossoNumero.toString().substring(5)} 89012.345678 1 1234${valor}`,
-            wqrcdPdraoMercd: "00020101021226840014br.gov.bcb.pix...",
+            // Campos extras do formato Bradesco Open API (response real)
+            registraTitulo: 1,
+            cdRetorno: 0,
+            dsRetorno: 'OPERACAO REALIZADA COM SUCESSO',
+            status: 'REGISTRADO',
+            codStatus: 0,
 
-            // Demais campos zerados ou mockados conforme exemplo
-            tp08Reg1: 0,
-            status10: "REGISTRADO",
-            codStatus10: 0,
-            nomeSacado10: payload.nomeSacado10 || "CLIENTE TESTE",
-            valMoeda10: payload.vnmnalTitloCobr,
-            dataVencto10: payload.dvctoTitloCobr,
-            nossoNumero: nossoNumero.toString() // Adicionado para facilitar mapeamento
+            // Dados do sacado (espelho do payload enviado)
+            nomePagador: payload.nomePagador,
+            nuCpfcnpjPagador: payload.nuCpfcnpjPagador,
+
+            // Dados financeiros
+            vlNominalTitulo: payload.vlNominalTitulo,
+            dtEmissaoTitulo: payload.dtEmissaoTitulo,
+            dtVencimentoTitulo: payload.dtVencimentoTitulo,
         };
     }
 

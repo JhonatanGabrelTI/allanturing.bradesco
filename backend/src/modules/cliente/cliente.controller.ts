@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../shared/prisma.service';
 
@@ -75,5 +75,25 @@ export class ClienteController {
             where: { id },
             include: { boletos: true },
         });
+    }
+
+    @Delete(':id')
+    @ApiOperation({ summary: 'Remover um pagador' })
+    async remove(@Param('id') id: string) {
+        // First delete related boletos history, then boletos, then the client
+        const boletos = await this.prisma.boleto.findMany({ where: { clienteId: id } });
+        for (const boleto of boletos) {
+            await this.prisma.historicoStatus.deleteMany({ where: { boletoId: boleto.id } });
+        }
+        await this.prisma.boleto.deleteMany({ where: { clienteId: id } });
+        return this.prisma.clientePagador.delete({ where: { id } });
+    }
+
+    @Delete()
+    @ApiOperation({ summary: 'Remover todos os pagadores' })
+    async removeAll() {
+        await this.prisma.historicoStatus.deleteMany({});
+        await this.prisma.boleto.deleteMany({});
+        return this.prisma.clientePagador.deleteMany({});
     }
 }
