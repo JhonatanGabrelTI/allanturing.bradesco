@@ -302,7 +302,7 @@ export class BoletoService {
         baixado: false,
         dataVencimento: { gte: new Date() },
       },
-      include: { cliente: true },
+      include: { cliente: true, configuracao: true },
       orderBy: { dataVencimento: 'asc' },
     });
   }
@@ -314,7 +314,7 @@ export class BoletoService {
         dataVencimento: { lt: new Date() },
         baixado: false,
       },
-      include: { cliente: true },
+      include: { cliente: true, configuracao: true },
     });
   }
 
@@ -369,488 +369,943 @@ export class BoletoService {
     const linhaDigitavel = boleto.linhaDigitavel || '23790.00000 00000.000000 00000.000000 0 00000000000000';
     const codigoBarras = boleto.codigoBarras || '';
 
-    // Gera barcode SVG simples (visual apenas)
-    const barcodeSvg = codigoBarras
-      ? (() => {
-        const bars = Array.from(codigoBarras).map((c, i) =>
-          `<rect x="${i * 2.2}" y="0" width="${parseInt(c) % 2 === 0 ? 1.4 : 2.8}" height="50" fill="black"/>`
-        ).join('');
-        return `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="50" viewBox="0 0 420 50">${bars}</svg>`;
-      })()
-      : `<div style="width:420px;height:50px;background:repeating-linear-gradient(90deg,#000 0px,#000 2px,#fff 2px,#fff 4px);"></div>`;
+    // Gera barcode SVG — Interleaved 2 of 5 (I2of5) padrão boleto brasileiro
+    const barcodeNumFormatado = codigoBarras
+      ? codigoBarras.replace(/(\d{5})(?=\d)/g, '$1 ').trim()
+      : '';
+
+    const barcodeSvg = (() => {
+      const svgW = 560;
+      const barH = 60;
+      const code = codigoBarras || '00000000000000000000000000000000000000000000';
+
+      // Tabela I2of5: true = Wide, false = Narrow
+      const i2of5: Record<string, boolean[]> = {
+        '0': [false, false, true, true, false],
+        '1': [true, false, false, false, true],
+        '2': [false, true, false, false, true],
+        '3': [true, true, false, false, false],
+        '4': [false, false, true, false, true],
+        '5': [true, false, true, false, false],
+        '6': [false, true, true, false, false],
+        '7': [false, false, false, true, true],
+        '8': [true, false, false, true, false],
+        '9': [false, true, false, true, false],
+      };
+
+      const N = 1;    // unidade estreita
+      const W = 2.5;  // unidade larga
+
+      // Sequência: [isBlack, larguraEmUnidades]
+      const elems: Array<[boolean, number]> = [];
+
+      // Start guard: 4 narrow (barra espaço barra espaço)
+      elems.push([true, N], [false, N], [true, N], [false, N]);
+
+      // Dados — pares de dígitos
+      const padded = code.length % 2 === 0 ? code : '0' + code;
+      for (let i = 0; i < padded.length; i += 2) {
+        const p1 = i2of5[padded[i]] || [false, false, true, true, false];
+        const p2 = i2of5[padded[i + 1]] || [false, false, true, true, false];
+        for (let j = 0; j < 5; j++) {
+          elems.push([true, p1[j] ? W : N]); // barra
+          elems.push([false, p2[j] ? W : N]); // espaço
+        }
+      }
+
+      // End guard: wide bar, narrow space, narrow bar
+      elems.push([true, W], [false, N], [true, N]);
+
+      // Escala para caber em svgW
+      const totalUnits = elems.reduce((s, [, w]) => s + w, 0);
+      const scale = svgW / totalUnits;
+
+      let x = 0;
+      const rects: string[] = [];
+      for (const [isBar, units] of elems) {
+        const w = units * scale;
+        if (isBar) {
+          rects.push(`<rect x="${x.toFixed(2)}" y="0" width="${w.toFixed(2)}" height="${barH}" fill="#000"/>`);
+        }
+        x += w;
+      }
+
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${barH}" viewBox="0 0 ${svgW} ${barH}" style="display:block;margin:0 auto;">${rects.join('')}</svg>`;
+    })();
 
     const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Boleto ${boleto.nossoNumero}</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+<meta charset="utf-8">
+<title>Boleto ${boleto.nossoNumero}</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 9pt;
+    color: #000;
+    background: #fff;
+    padding: 8mm 10mm;
+  }
+  .boleto { width: 100%; max-width: 210mm; margin: 0 auto; }
 
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* ── HEADER ── */
+  .hdr {
+    display: flex;
+    align-items: stretch;
+    border: 1.5px solid #000;
+    border-bottom: none;
+  }
+  .hdr-logo {
+    padding: 3px 10px;
+    border-right: 1.5px solid #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 100px;
+  }
+  .logo-name {
+    font-size: 15pt;
+    font-weight: 900;
+    color: #cc0000;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+  .logo-sub {
+    font-size: 6pt;
+    color: #666;
+    margin-top: 1px;
+  }
+  .hdr-code {
+    padding: 4px 12px;
+    font-size: 14pt;
+    font-weight: 700;
+    border-right: 1.5px solid #000;
+    display: flex;
+    align-items: center;
+  }
+  .hdr-linha {
+    flex: 1;
+    padding: 4px 8px;
+    font-size: 10pt;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── TABLE ── */
+  table { width: 100%; border-collapse: collapse; }
+  td {
+    border: 1px solid #000;
+    padding: 2px 4px;
+    vertical-align: top;
+    font-size: 8.5pt;
+  }
+  .lbl {
+    font-size: 6.5pt;
+    color: #000;
+    font-weight: normal;
+    display: block;
+    margin-bottom: 1px;
+  }
+  .val {
+    font-size: 8.5pt;
+    font-weight: bold;
+    display: block;
+  }
+  .val-lg { font-size: 10pt; font-weight: bold; }
+  .val-red { font-size: 11pt; font-weight: bold; color: #cc0000; }
+  .val-mono { font-family: 'Courier New', monospace; font-size: 8.5pt; font-weight: bold; }
+  .ta-right { text-align: right; }
+  .td-right { text-align: right; }
+
+  /* ── INSTRUCOES ── */
+  .instrucoes td { height: 60px; vertical-align: top; }
+
+  /* ── CUT LINE ── */
+  .cut-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 4px;
+    color: #555;
+    font-size: 7pt;
+  }
+  .cut-line::before, .cut-line::after {
+    content: '';
+    flex: 1;
+    border-top: 1px dashed #888;
+  }
+
+  /* ── BARCODE AREA ── */
+  .barcode-area {
+    border: 1px solid #000;
+    border-top: none;
+    padding: 10px 8px 6px;
+    text-align: center;
+  }
+  .barcode-num {
+    font-family: 'Courier New', monospace;
+    font-size: 7pt;
+    letter-spacing: 1.5px;
+    word-spacing: 4px;
+    margin-top: 5px;
+    color: #333;
+  }
+
+  /* ── FOOTER ── */
+  .auth-line {
+    display: flex;
+    justify-content: space-between;
+    font-size: 7pt;
+    color: #555;
+    border: 1px solid #000;
+    border-top: none;
+    padding: 3px 6px;
+  }
+
+  /* ── SECTION TAG ── */
+  .section-tag {
+    font-size: 7pt;
+    text-align: right;
+    padding: 2px 0;
+    color: #444;
+  }
+
+  /* ── PRINT BUTTON ── */
+  .print-btn {
+    display: block;
+    margin: 14px auto 0;
+    padding: 8px 28px;
+    background: #cc0000;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 11pt;
+    font-weight: bold;
+    cursor: pointer;
+    font-family: Arial, sans-serif;
+  }
+  .print-btn:hover { background: #990000; }
+
+  @media print {
+    body { padding: 0; }
+    .print-btn { display: none; }
+    .cut-line { page-break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="boleto">
+
+<!-- ==================== RECIBO DO SACADO ==================== -->
+<div class="section-tag">Recibo do Sacado</div>
+
+<!-- HEADER recibo -->
+<div class="hdr">
+  <div class="hdr-logo">
+    <div class="logo-name">Bradesco</div>
+    <div class="logo-sub">Boleto de Cobran&ccedil;a</div>
+  </div>
+  <div class="hdr-code">237-D</div>
+  <div class="hdr-linha">${linhaDigitavel}</div>
+</div>
+
+<table>
+  <!-- Local de Pagamento + Vencimento -->
+  <tr>
+    <td style="width:72%">
+      <span class="lbl">Local de Pagamento</span>
+      <span class="val">Pag&aacute;vel preferencialmente na Rede Bradesco ou no Bradesco Expresso</span>
+    </td>
+    <td style="width:28%" class="td-right">
+      <span class="lbl">Vencimento</span>
+      <span class="val val-lg">${dataVenc}</span>
+    </td>
+  </tr>
+  <!-- Beneficiário + Agência/Código -->
+  <tr>
+    <td>
+      <span class="lbl">Nome do Benefici&aacute;rio / CPF-CNPJ / Endere&ccedil;o</span>
+      <span class="val">${config.descricao || 'BENEFICIÁRIO'}</span>
+    </td>
+    <td class="td-right">
+      <span class="lbl">Ag&ecirc;ncia / C&oacute;digo do Benefici&aacute;rio</span>
+      <span class="val">${config.agencia || '0000'} / ${config.conta || '00000'}</span>
+    </td>
+  </tr>
+  <!-- Data Doc | Nº Doc | Espécie | Aceite | Data Proc | Nosso-Número -->
+  <tr>
+    <td style="width:11%">
+      <span class="lbl">Data do Documento</span>
+      <span class="val">${dataEmissao}</span>
+    </td>
+    <td style="width:14%">
+      <span class="lbl">N&uacute;mero do Documento</span>
+      <span class="val val-mono">${boleto.seuNumero || '—'}</span>
+    </td>
+    <td style="width:8%">
+      <span class="lbl">Esp&eacute;cie Doc.</span>
+      <span class="val">DM</span>
+    </td>
+    <td style="width:6%">
+      <span class="lbl">Aceite</span>
+      <span class="val">N</span>
+    </td>
+    <td style="width:13%">
+      <span class="lbl">Data Processamento</span>
+      <span class="val">${dataProcessamento}</span>
+    </td>
+    <td class="td-right">
+      <span class="lbl">Nosso-N&uacute;mero</span>
+      <span class="val val-red">${boleto.nossoNumero}</span>
+    </td>
+  </tr>
+  <!-- Uso Banco | CIP | Carteira | Moeda | Qtd | Valor | Valor Doc -->
+  <tr>
+    <td><span class="lbl">Uso do Banco</span><span class="val">&nbsp;</span></td>
+    <td><span class="lbl">CIP</span><span class="val">&nbsp;</span></td>
+    <td><span class="lbl">Carteira</span><span class="val">${config.carteira || '09'}</span></td>
+    <td><span class="lbl">Moeda</span><span class="val">R$</span></td>
+    <td><span class="lbl">Quantidade</span><span class="val">&nbsp;</span></td>
+    <td><span class="lbl">Valor</span><span class="val">&nbsp;</span></td>
+    <td class="td-right">
+      <span class="lbl">Valor do Documento</span>
+      <span class="val val-red">R&nbsp;${valorFormatado}</span>
+    </td>
+  </tr>
+  <!-- Instruções + Encargos -->
+  <tr class="instrucoes">
+    <td colspan="5" style="vertical-align:top; height:50px;">
+      <span class="lbl">Instru&ccedil;&otilde;es (Texto de responsabilidade do Benefici&aacute;rio)</span>
+    </td>
+    <td colspan="2" style="vertical-align:top; padding:0;">
+      <table style="width:100%; height:100%; border:none;">
+        <tr><td style="border:none; border-bottom:1px solid #000; font-size:7.5pt"><span class="lbl">(-) Desconto / Abatimento</span></td></tr>
+        <tr><td style="border:none; border-bottom:1px solid #000; font-size:7.5pt"><span class="lbl">(+) Juros / Multa</span></td></tr>
+        <tr><td style="border:none; border-bottom:1px solid #000; font-size:7.5pt"><span class="lbl">(+) Outros Acr&eacute;scimos</span></td></tr>
+        <tr><td style="border:none; font-size:7.5pt"><span class="lbl">(=) Valor Cobrado</span></td></tr>
+      </table>
+    </td>
+  </tr>
+  <!-- Pagador -->
+  <tr>
+    <td colspan="7">
+      <span class="lbl">Nome do Pagador / CPF-CNPJ / Endere&ccedil;o</span>
+      <span class="val">${cliente.nome} &mdash; ${docDisplay}</span>
+      <span style="font-size:7.5pt; display:block;">${enderecoCompleto}</span>
+    </td>
+  </tr>
+  <!-- Beneficiário Final -->
+  <tr>
+    <td colspan="5">
+      <span class="lbl">Nome do <u>Benefici&aacute;rio Final</u> / CPF-CNPJ / Endere&ccedil;o</span>
+      <span class="val" style="color:#333">${config.descricao || '—'}</span>
+    </td>
+    <td colspan="2" class="td-right">
+      <span class="lbl">C&oacute;d. Baixa</span>
+      <span class="val">&nbsp;</span>
+    </td>
+  </tr>
+</table>
+
+<!-- ===================== CORTE ===================== -->
+<div class="cut-line">&#9988; Corte aqui</div>
+
+<!-- ==================== FICHA DE COMPENSAÇÃO ==================== -->
+<div class="section-tag">Ficha de Compensa&ccedil;&atilde;o</div>
+
+<!-- HEADER ficha -->
+<div class="hdr">
+  <div class="hdr-logo">
+    <div class="logo-name">Bradesco</div>
+    <div class="logo-sub">Boleto de Cobran&ccedil;a</div>
+  </div>
+  <div class="hdr-code">237-D</div>
+  <div class="hdr-linha">${linhaDigitavel}</div>
+</div>
+
+<table>
+  <tr>
+    <td style="width:72%">
+      <span class="lbl">Local de Pagamento</span>
+      <span class="val">Pag&aacute;vel preferencialmente na Rede Bradesco ou no Bradesco Expresso</span>
+    </td>
+    <td style="width:28%" class="td-right">
+      <span class="lbl">Vencimento</span>
+      <span class="val val-lg">${dataVenc}</span>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <span class="lbl">Nome do Benefici&aacute;rio / CPF-CNPJ / Endere&ccedil;o</span>
+      <span class="val">${config.descricao || 'BENEFICIÁRIO'}</span>
+    </td>
+    <td class="td-right">
+      <span class="lbl">Ag&ecirc;ncia / C&oacute;digo do Benefici&aacute;rio</span>
+      <span class="val">${config.agencia || '0000'} / ${config.conta || '00000'}</span>
+    </td>
+  </tr>
+  <tr>
+    <td style="width:11%">
+      <span class="lbl">Data do Documento</span>
+      <span class="val">${dataEmissao}</span>
+    </td>
+    <td style="width:14%">
+      <span class="lbl">N&uacute;mero do Documento</span>
+      <span class="val val-mono">${boleto.seuNumero || '—'}</span>
+    </td>
+    <td style="width:8%">
+      <span class="lbl">Esp&eacute;cie Doc.</span>
+      <span class="val">DM</span>
+    </td>
+    <td style="width:6%">
+      <span class="lbl">Aceite</span>
+      <span class="val">N</span>
+    </td>
+    <td style="width:13%">
+      <span class="lbl">Data Processamento</span>
+      <span class="val">${dataProcessamento}</span>
+    </td>
+    <td class="td-right">
+      <span class="lbl">Nosso-N&uacute;mero</span>
+      <span class="val val-red">${boleto.nossoNumero}</span>
+    </td>
+  </tr>
+  <tr>
+    <td><span class="lbl">Uso do Banco</span><span class="val">&nbsp;</span></td>
+    <td><span class="lbl">CIP</span><span class="val">&nbsp;</span></td>
+    <td><span class="lbl">Carteira</span><span class="val">${config.carteira || '09'}</span></td>
+    <td><span class="lbl">Moeda</span><span class="val">R$</span></td>
+    <td><span class="lbl">Quantidade</span><span class="val">&nbsp;</span></td>
+    <td><span class="lbl">Valor</span><span class="val">&nbsp;</span></td>
+    <td class="td-right">
+      <span class="lbl">Valor do Documento</span>
+      <span class="val val-red">R&nbsp;${valorFormatado}</span>
+    </td>
+  </tr>
+  <!-- Instruções + Encargos -->
+  <tr class="instrucoes">
+    <td colspan="5" style="vertical-align:top; height:60px;">
+      <span class="lbl">Instru&ccedil;&otilde;es (Texto de responsabilidade do Benefici&aacute;rio)</span>
+    </td>
+    <td colspan="2" style="vertical-align:top; padding:0;">
+      <table style="width:100%; height:100%; border:none;">
+        <tr><td style="border:none; border-bottom:1px solid #000; font-size:7.5pt;padding:3px 4px"><span class="lbl">(-) Desconto / Abatimento</span></td></tr>
+        <tr><td style="border:none; border-bottom:1px solid #000; font-size:7.5pt;padding:3px 4px"><span class="lbl">(+) Juros / Multa</span></td></tr>
+        <tr><td style="border:none; border-bottom:1px solid #000; font-size:7.5pt;padding:3px 4px"><span class="lbl">(+) Outros Acr&eacute;scimos</span></td></tr>
+        <tr><td style="border:none; font-size:7.5pt;padding:3px 4px"><span class="lbl">(=) Valor Cobrado</span></td></tr>
+      </table>
+    </td>
+  </tr>
+  <!-- Pagador -->
+  <tr>
+    <td colspan="7">
+      <span class="lbl">Nome do Pagador / CPF-CNPJ / Endere&ccedil;o</span>
+      <span class="val">${cliente.nome} &mdash; ${docDisplay}</span>
+      <span style="font-size:7.5pt; display:block;">${enderecoCompleto}</span>
+    </td>
+  </tr>
+  <!-- Beneficiário Final -->
+  <tr>
+    <td colspan="5">
+      <span class="lbl">Nome do <u>Benefici&aacute;rio Final</u> / CPF-CNPJ / Endere&ccedil;o</span>
+      <span class="val" style="color:#333">${config.descricao || '—'}</span>
+    </td>
+    <td colspan="2" class="td-right">
+      <span class="lbl">C&oacute;d. Baixa</span>
+      <span class="val">&nbsp;</span>
+    </td>
+  </tr>
+</table>
+
+<!-- BARCODE -->
+<div class="barcode-area">
+  ${barcodeSvg}
+  <div class="barcode-num">${barcodeNumFormatado}</div>
+</div>
+
+<div class="auth-line">
+  <span>&larr;&mdash; 10mm</span>
+  <span style="font-weight:bold;">Autentica&ccedil;&atilde;o Mec&acirc;nica &mdash; Ficha de Compensa&ccedil;&atilde;o</span>
+  <span>10mm &mdash;&rarr;</span>
+</div>
+
+<button class="print-btn" onclick="window.print()">&#128438; Imprimir / Salvar PDF</button>
+
+</div><!-- /.boleto -->
+</body>
+</html>`;
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    * { margin: 0; padding: 0; box- sizing: border - box;
+  }
 
     body {
-      font-family: 'Inter', Arial, sans-serif;
-      background: #f0f2f5;
-      color: #111;
-      padding: 24px 16px 40px;
-      font-size: 11px;
-      line-height: 1.4;
-    }
+  font - family: 'Inter', Arial, sans - serif;
+  background: #f0f2f5;
+  color: #111;
+  padding: 24px 16px 40px;
+  font - size: 11px;
+  line - height: 1.4;
+}
 
     /* ── PAGE WRAPPER ── */
     .page {
-      max-width: 800px;
-      margin: 0 auto;
-    }
+  max - width: 800px;
+  margin: 0 auto;
+}
 
     /* ── BOLETO CARD ── */
-    .boleto-card {
-      background: #fff;
-      border: 1px solid #c8c8c8;
-      border-radius: 6px;
-      overflow: hidden;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.10);
-    }
+    .boleto - card {
+  background: #fff;
+  border: 1px solid #c8c8c8;
+  border - radius: 6px;
+  overflow: hidden;
+  box - shadow: 0 2px 12px rgba(0, 0, 0, 0.10);
+}
 
     /* ── SECTION SEPARATOR ── */
-    .section-tag {
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 1.5px;
-      text-align: right;
-      padding: 3px 8px;
-      color: #555;
-      background: #f8f8f8;
-      border-top: 1px solid #ddd;
-    }
+    .section - tag {
+  font - size: 9px;
+  font - weight: 700;
+  letter - spacing: 1.5px;
+  text - align: right;
+  padding: 3px 8px;
+  color: #555;
+  background: #f8f8f8;
+  border - top: 1px solid #ddd;
+}
 
     /* ── ROW ── */
     .row {
-      display: flex;
-      border-bottom: 1px solid #d0d0d0;
-    }
-    .row:last-child { border-bottom: none; }
+  display: flex;
+  border - bottom: 1px solid #d0d0d0;
+}
+    .row: last - child { border - bottom: none; }
 
     /* ── CELL ── */
     .cell {
-      padding: 5px 8px;
-      border-right: 1px solid #d0d0d0;
-      min-height: 36px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-    .cell:last-child { border-right: none; }
+  padding: 5px 8px;
+  border - right: 1px solid #d0d0d0;
+  min - height: 36px;
+  display: flex;
+  flex - direction: column;
+  justify - content: space - between;
+}
+    .cell: last - child { border - right: none; }
 
     .lbl {
-      font-size: 8.5px;
-      color: #777;
-      font-weight: 500;
-      white-space: nowrap;
-      margin-bottom: 2px;
-    }
+  font - size: 8.5px;
+  color: #777;
+  font - weight: 500;
+  white - space: nowrap;
+  margin - bottom: 2px;
+}
     .val {
-      font-size: 11px;
-      font-weight: 600;
-      color: #111;
-    }
-    .val-lg {
-      font-size: 14px;
-      font-weight: 700;
-      color: #111;
-    }
-    .val-xl {
-      font-size: 17px;
-      font-weight: 700;
-      color: #c0001f;
-    }
-    .val-mono {
-      font-family: 'Courier New', monospace;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-    }
-    .val-right { text-align: right; }
+  font - size: 11px;
+  font - weight: 600;
+  color: #111;
+}
+    .val - lg {
+  font - size: 14px;
+  font - weight: 700;
+  color: #111;
+}
+    .val - xl {
+  font - size: 17px;
+  font - weight: 700;
+  color: #c0001f;
+}
+    .val - mono {
+  font - family: 'Courier New', monospace;
+  font - size: 11px;
+  font - weight: 600;
+  letter - spacing: 0.5px;
+}
+    .val - right { text - align: right; }
 
     /* ── HEADER ── */
-    .boleto-header {
-      display: flex;
-      align-items: stretch;
-      border-bottom: 2px solid #c0001f;
-      background: #fff;
-    }
-    .header-logo {
-      display: flex;
-      align-items: center;
-      padding: 10px 14px;
-      border-right: 2px solid #c0001f;
-      gap: 0;
-      flex-shrink: 0;
-    }
-    .logo-text {
-      font-size: 22px;
-      font-weight: 900;
-      color: #c0001f;
-      letter-spacing: -1.5px;
-      font-family: Arial, sans-serif;
-    }
-    .banco-code {
-      border-left: 2px solid #111;
-      border-right: 2px solid #111;
-      padding: 2px 10px;
-      font-size: 18px;
-      font-weight: 700;
-      margin: 0 8px;
-      color: #111;
-      align-self: center;
-      line-height: 1;
-    }
-    .header-linha {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      padding: 8px 12px;
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
-      font-weight: 700;
-      letter-spacing: 0.8px;
-      color: #111;
-    }
+    .boleto - header {
+  display: flex;
+  align - items: stretch;
+  border - bottom: 2px solid #c0001f;
+  background: #fff;
+}
+    .header - logo {
+  display: flex;
+  align - items: center;
+  padding: 10px 14px;
+  border - right: 2px solid #c0001f;
+  gap: 0;
+  flex - shrink: 0;
+}
+    .logo - text {
+  font - size: 22px;
+  font - weight: 900;
+  color: #c0001f;
+  letter - spacing: -1.5px;
+  font - family: Arial, sans - serif;
+}
+    .banco - code {
+  border - left: 2px solid #111;
+  border - right: 2px solid #111;
+  padding: 2px 10px;
+  font - size: 18px;
+  font - weight: 700;
+  margin: 0 8px;
+  color: #111;
+  align - self: center;
+  line - height: 1;
+}
+    .header - linha {
+  flex: 1;
+  display: flex;
+  align - items: center;
+  justify - content: flex - end;
+  padding: 8px 12px;
+  font - family: 'Courier New', monospace;
+  font - size: 14px;
+  font - weight: 700;
+  letter - spacing: 0.8px;
+  color: #111;
+}
 
     /* ── CUT LINE ── */
-    .cut-line {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 0 6px;
-      color: #888;
-      font-size: 10px;
-    }
-    .cut-line::before,
-    .cut-line::after {
-      content: '';
-      flex: 1;
-      border-top: 1.5px dashed #aaa;
-    }
+    .cut - line {
+  display: flex;
+  align - items: center;
+  gap: 8px;
+  padding: 10px 0 6px;
+  color: #888;
+  font - size: 10px;
+}
+    .cut - line:: before,
+    .cut - line::after {
+  content: '';
+  flex: 1;
+  border - top: 1.5px dashed #aaa;
+}
 
     /* ── INSTRUCOES ── */
-    .instrucoes-area {
-      min-height: 70px;
-      padding: 6px 8px;
-      border-right: 1px solid #d0d0d0;
-      flex: 1;
-    }
+    .instrucoes - area {
+  min - height: 70px;
+  padding: 6px 8px;
+  border - right: 1px solid #d0d0d0;
+  flex: 1;
+}
 
     /* ── ENCARGOS ── */
     .encargos {
-      flex: 0 0 170px;
-      display: flex;
-      flex-direction: column;
-    }
-    .encargo-row {
-      border-bottom: 1px solid #d0d0d0;
-      padding: 4px 8px;
-    }
-    .encargo-row:last-child { border-bottom: none; }
+  flex: 0 0 170px;
+  display: flex;
+  flex - direction: column;
+}
+    .encargo - row {
+  border - bottom: 1px solid #d0d0d0;
+  padding: 4px 8px;
+}
+    .encargo - row: last - child { border - bottom: none; }
 
     /* ── BARCODE ── */
-    .barcode-area {
-      padding: 18px 0 10px;
-      text-align: center;
-      border-top: 1px solid #d0d0d0;
-    }
-    .barcode-num {
-      font-family: 'Courier New', monospace;
-      font-size: 9px;
-      color: #555;
-      margin-top: 6px;
-      letter-spacing: 0.5px;
-    }
+    .barcode - area {
+  padding: 18px 0 10px;
+  text - align: center;
+  border - top: 1px solid #d0d0d0;
+}
+    .barcode - num {
+  font - family: 'Courier New', monospace;
+  font - size: 9px;
+  color: #555;
+  margin - top: 6px;
+  letter - spacing: 0.5px;
+}
 
     /* ── FOOTER AUTH ── */
-    .footer-auth {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 5px 10px;
-      background: #f8f8f8;
-      border-top: 1px dashed #bbb;
-      font-size: 9px;
-      color: #666;
-    }
+    .footer - auth {
+  display: flex;
+  justify - content: space - between;
+  align - items: center;
+  padding: 5px 10px;
+  background: #f8f8f8;
+  border - top: 1px dashed #bbb;
+  font - size: 9px;
+  color: #666;
+}
 
     /* ── PRINT BUTTON ── */
-    .print-btn {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin: 20px auto 0;
-      padding: 11px 32px;
-      background: #c0001f;
-      color: white;
-      border: none;
-      border-radius: 6px;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      font-family: 'Inter', Arial, sans-serif;
-      box-shadow: 0 2px 8px rgba(192,0,31,0.3);
-      transition: background 0.15s;
-    }
-    .print-btn:hover { background: #9a0018; }
+    .print - btn {
+  display: flex;
+  align - items: center;
+  gap: 8px;
+  margin: 20px auto 0;
+  padding: 11px 32px;
+  background: #c0001f;
+  color: white;
+  border: none;
+  border - radius: 6px;
+  font - size: 14px;
+  font - weight: 700;
+  cursor: pointer;
+  font - family: 'Inter', Arial, sans - serif;
+  box - shadow: 0 2px 8px rgba(192, 0, 31, 0.3);
+  transition: background 0.15s;
+}
+    .print - btn:hover { background: #9a0018; }
 
-    @media print {
+@media print {
       body { background: white; padding: 0; }
-      .boleto-card { box-shadow: none; border-radius: 0; }
-      .print-btn { display: none; }
-      .cut-line { page-break-after: always; }
-    }
-  </style>
-</head>
-<body>
-<div class="page">
+      .boleto - card { box - shadow: none; border - radius: 0; }
+      .print - btn { display: none; }
+      .cut - line { page -break-after: always; }
+}
+</style>
+  </head>
+  < body >
+  <div class="page" >
 
-<!-- ========================= RECIBO DO SACADO ========================= -->
-<div class="boleto-card">
+    <!-- ========================= RECIBO DO SACADO ========================= -->
+      <div class="boleto-card" >
 
-  <!-- HEADER -->
-  <div class="boleto-header">
-    <div class="header-logo">
-      <span class="logo-text">Bradesco</span>
-      <span class="banco-code">237-D</span>
-    </div>
-    <div class="header-linha">${linhaDigitavel}</div>
+        <!--HEADER -->
+          <div class="boleto-header" >
+            <div class="header-logo" >
+              <span class="logo-text" > Bradesco </span>
+                < span class="banco-code" > 237 - D </span>
+                  </div>
+                  < div class="header-linha" > ${ linhaDigitavel } </div>
+                    </div>
+
+                    < !--Local de Pagamento + Vencimento-- >
+                      <div class="row" >
+                        <div class="cell" style = "flex:1;" >
+                          <div class="lbl" > Local de Pagamento </div>
+                            < div class="val" > Pag & aacute;vel Preferencialmente na Rede Bradesco ou no Bradesco Expresso </div>
+                              </div>
+                              < div class="cell" style = "flex:0 0 160px; align-items:flex-end;" >
+                                <div class="lbl" > Vencimento </div>
+                                  < div class="val-lg val-right" > ${ dataVenc } </div>
+                                    </div>
+                                    </div>
+
+                                    < !--Beneficiário + Agência-- >
+                                    <div class="row" >
+                                      <div class="cell" style = "flex:1;" >
+                                        <div class="lbl" > Nome do Benefici & aacute;rio / CPF - CNPJ / Endere & ccedil; o </div>
+                                          < div class="val" > ${ config.descricao || 'BENEFICI&Aacute;RIO' } </div>
+                                            </div>
+                                            < div class="cell" style = "flex:0 0 200px; align-items:flex-end;" >
+                                              <div class="lbl" > Ag & ecirc; ncia / C & oacute;digo do Benefici & aacute;rio </div>
+                                                < div class="val val-right" > ${ config.agencia || '0000' } / ${config.conta || '00000'}</div >
+                                                  </div>
+                                                  </div>
+
+                                                  < !--Data | Número Documento | Espécie | Aceite | Data Proc | Nosso - Número-- >
+                                                    <div class="row" >
+                                                      <div class="cell" style = "flex:0 0 100px;" >
+                                                        <div class="lbl" > Data do Documento </div>
+                                                          < div class= "val" > ${ dataEmissao } </div>
+                                                            </div>
+                                                            < div class="cell" style = "flex:0 0 120px;" >
+                                                              <div class="lbl" > N & uacute;mero do Documento </div>
+                                                                < div class= "val val-mono" > ${ boleto.seuNumero || '&mdash;' } </div>
+                                                                  </div>
+                                                                  < div class="cell" style = "flex:0 0 70px;" >
+                                                                    <div class="lbl" > Esp & eacute;cie Doc.</div>
+                                                                      < div class="val" > ${ boleto.especieDocumento || 'DM' } </div>
+                                                                        </div>
+                                                                        < div class="cell" style = "flex:0 0 50px;" >
+                                                                          <div class="lbl" > Aceite </div>
+                                                                            < div class="val" > N </div>
+                                                                              </div>
+                                                                              < div class="cell" style = "flex:0 0 110px;" >
+                                                                                <div class="lbl" > Data Processamento </div>
+                                                                                  < div class="val" > ${ dataProcessamento } </div>
+                                                                                    </div>
+                                                                                    < div class="cell" style = "flex:1; align-items:flex-end;" >
+                                                                                      <div class="lbl" > Nosso - N & uacute; mero </div>
+                                                                                        < div class="val-xl" > ${ boleto.nossoNumero } </div>
+                                                                                          </div>
+                                                                                          </div>
+
+                                                                                          < !--Uso Banco | CIP | Carteira | Moeda | Quantidade | Valor | Valor do Documento-- >
+                                                                                            <div class= "row" >
+                                                                                            <div class="cell" style = "flex:0 0 80px;" > <div class="lbl" > Uso do Banco < /div><div class="val">&nbsp;</div > </div>
+                                                                                              < div class= "cell" style = "flex:0 0 50px;" > <div class="lbl" > CIP < /div><div class="val">&nbsp;</div > </div>
+                                                                                                < div class="cell" style = "flex:0 0 70px;" > <div class="lbl" > Carteira < /div><div class="val">${config.carteira || '09'}</div > </div>
+                                                                                                  < div class="cell" style = "flex:0 0 60px;" > <div class="lbl" > Moeda < /div><div class="val">R$</div > </div>
+                                                                                                    < div class="cell" style = "flex:0 0 90px;" > <div class="lbl" > Quantidade < /div><div class="val">&nbsp;</div > </div>
+                                                                                                      < div class="cell" style = "flex:0 0 90px;" > <div class="lbl" > Valor < /div><div class="val">&nbsp;</div > </div>
+                                                                                                        < div class="cell" style = "flex:1; align-items:flex-end;" >
+                                                                                                          <div class="lbl" > Valor do Documento </div>
+                                                                                                            < div class= "val-xl" > R & nbsp;${ valorFormatado } </div>
+                                                                                                              </div>
+                                                                                                              </div>
+
+                                                                                                              < !--Informações + Encargos-- >
+                                                                                                              <div class="row" style = "align-items:stretch;" >
+                                                                                                                <div class="instrucoes-area" >
+                                                                                                                  <div class="lbl" > Informa & ccedil;& otilde;es de responsabilidade do benefici & aacute;rio </div>
+                                                                                                                    </div>
+                                                                                                                    < div class="encargos" >
+                                                                                                                      <div class="encargo-row" > <div class="lbl" > (=) Desconto / Abatimento < /div><div class="val val-right">&nbsp;</div > </div>
+                                                                                                                        < div class="encargo-row" > <div class="lbl" > (+) Juros / Multa < /div><div class="val val-right">&nbsp;</div > </div>
+                                                                                                                          < div class="encargo-row" > <div class="lbl" > (+) Outros Acr & eacute; scimos < /div><div class="val val-right">&nbsp;</div > </div>
+                                                                                                                            < div class="encargo-row" > <div class="lbl" > (=) Valor Cobrado < /div><div class="val val-right">&nbsp;</div > </div>
+                                                                                                                              </div>
+                                                                                                                              </div>
+
+                                                                                                                              < !--Pagador -->
+                                                                                                                                <div class="row" style = "border-top:1px solid #d0d0d0;" >
+                                                                                                                                  <div class="cell" style = "flex:1;" >
+                                                                                                                                    <div class="lbl" > Nome do Pagador / CPF - CNPJ / Endere & ccedil;o </div>
+                                                                                                                                      < div class="val" style = "margin-top:3px;" > ${ cliente.nome } & mdash; ${ docDisplay } </div>
+                                                                                                                                        < div style = "font-size:10px; color:#444; margin-top:2px;" > ${ enderecoCompleto } </div>
+                                                                                                                                          </div>
+                                                                                                                                          </div>
+
+                                                                                                                                          < div class="section-tag" > RECIBO DO SACADO </div>
+                                                                                                                                            </div>
+
+                                                                                                                                            < !-- ========================= CUT LINE ========================= -->
+                                                                                                                                              <div class="cut-line" >&#9988; recorte aqui </div>
+
+                                                                                                                                                < !-- ========================= FICHA DE COMPENSAÇÃO ========================= -->
+                                                                                                                                                  <div class="boleto-card" >
+
+                                                                                                                                                    <!--HEADER -->
+                                                                                                                                                      <div class="boleto-header" >
+                                                                                                                                                        <div class="header-logo" >
+                                                                                                                                                          <span class="logo-text" > Bradesco </span>
+                                                                                                                                                            < span class="banco-code" > 237 - D </span>
+                                                                                                                                                              </div>
+                                                                                                                                                              < div class="header-linha" > ${ linhaDigitavel } </div>
+                                                                                                                                                                </div>
+
+                                                                                                                                                                < !--Local + Vencimento-- >
+                                                                                                                                                                <div class="row" >
+                                                                                                                                                                  <div class="cell" style = "flex:1;" >
+                                                                                                                                                                    <div class="lbl" > Local de Pagamento </div>
+                                                                                                                                                                      < div class="val" > Pag & aacute;vel Preferencialmente na Rede Bradesco ou no Bradesco Expresso </div>
+                                                                                                                                                                        </div>
+                                                                                                                                                                        < div class="cell" style = "flex:0 0 160px; align-items:flex-end;" >
+                                                                                                                                                                          <div class="lbl" > Vencimento </div>
+                                                                                                                                                                            < div class="val-lg val-right" > ${ dataVenc } </div>
+                                                                                                                                                                              </div>
+                                                                                                                                                                              </div>
+
+                                                                                                                                                                              < !--Beneficiário + Agência-- >
+                                                                                                                                                                              <div class="row" >
+                                                                                                                                                                                <div class="cell" style = "flex:1;" >
+                                                                                                                                                                                  <div class="lbl" > Nome do Benefici & aacute;rio / CPF - CNPJ / Endere & ccedil; o </div>
+                                                                                                                                                                                    < div class="val" > ${ config.descricao || 'BENEFICI&Aacute;RIO' } </div>
+                                                                                                                                                                                      </div>
+                                                                                                                                                                                      < div class="cell" style = "flex:0 0 200px; align-items:flex-end;" >
+                                                                                                                                                                                        <div class="lbl" > Ag & ecirc; ncia / C & oacute;digo do Benefici & aacute;rio </div>
+                                                                                                                                                                                          < div class="val val-right" > ${ config.agencia || '0000' } / ${config.conta || '00000'}</div >
+                                                                                                                                                                                            </div>
+                                                                                                                                                                                            </div>
+
+                                                                                                                                                                                            < !--Datas / Nosso Número-- >
+                                                                                                                                                                                              <div class="row" >
+                                                                                                                                                                                                <div class="cell" style = "flex:0 0 100px;" >
+                                                                                                                                                                                                  <div class="lbl" > Data do Documento </div>
+                                                                                                                                                                                                    < div class= "val" > ${ dataEmissao } </div>
+                                                                                                                                                                                                      </div>
+                                                                                                                                                                                                      < div class="cell" style = "flex:0 0 120px;" >
+                                                                                                                                                                                                        <div class="lbl" > N & uacute;mero do Documento </div>
+                                                                                                                                                                                                          < div class= "val val-mono" > ${ boleto.seuNumero || '&mdash;' } </div>
+                                                                                                                                                                                                            </div>
+                                                                                                                                                                                                            < div class="cell" style = "flex:0 0 70px;" >
+                                                                                                                                                                                                              <div class="lbl" > Esp & eacute;cie Doc.</div>
+                                                                                                                                                                                                                < div class="val" > ${ boleto.especieDocumento || 'DM' } </div>
+                                                                                                                                                                                                                  </div>
+                                                                                                                                                                                                                  < div class="cell" style = "flex:0 0 50px;" >
+                                                                                                                                                                                                                    <div class="lbl" > Aceite </div>
+                                                                                                                                                                                                                      < div class="val" > N </div>
+                                                                                                                                                                                                                        </div>
+                                                                                                                                                                                                                        < div class="cell" style = "flex:0 0 110px;" >
+                                                                                                                                                                                                                          <div class="lbl" > Data Processamento </div>
+                                                                                                                                                                                                                            < div class="val" > ${ dataProcessamento } </div>
+                                                                                                                                                                                                                              </div>
+                                                                                                                                                                                                                              < div class="cell" style = "flex:1; align-items:flex-end;" >
+                                                                                                                                                                                                                                <div class="lbl" > Nosso - N & uacute; mero </div>
+                                                                                                                                                                                                                                  < div class="val-xl" > ${ boleto.nossoNumero } </div>
+                                                                                                                                                                                                                                    </div>
+                                                                                                                                                                                                                                    </div>
+
+                                                                                                                                                                                                                                    < !--Uso Banco etc + Valor-- >
+                                                                                                                                                                                                                                      <div class="row" >
+                                                                                                                                                                                                                                        <div class="cell" style = "flex:0 0 80px;" > <div class="lbl" > Uso do Banco < /div><div class="val">&nbsp;</div > </div>
+                                                                                                                                                                                                                                          < div class= "cell" style = "flex:0 0 50px;" > <div class="lbl" > CIP < /div><div class="val">&nbsp;</div > </div>
+                                                                                                                                                                                                                                            < div class="cell" style = "flex:0 0 70px;" > <div class="lbl" > Carteira < /div><div class="val">${config.carteira || '09'}</div > </div>
+                                                                                                                                                                                                                                              < div class="cell" style = "flex:0 0 60px;" > <div class="lbl" > Moeda < /div><div class="val">R$</div > </div>
+                                                                                                                                                                                                                                                < div class="cell" style = "flex:0 0 90px;" > <div class="lbl" > Quantidade < /div><div class="val">&nbsp;</div > </div>
+                                                                                                                                                                                                                                                  < div class="cell" style = "flex:0 0 90px;" > <div class="lbl" > Valor < /div><div class="val">&nbsp;</div > </div>
+                                                                                                                                                                                                                                                    < div class="cell" style = "flex:1; align-items:flex-end;" >
+                                                                                                                                                                                                                                                      <div class="lbl" > Valor do Documento </div>
+                                                                                                                                                                                                                                                        < div class= "val-xl" > R & nbsp;${ valorFormatado } </div>
+                                                                                                                                                                                                                                                          </div>
+                                                                                                                                                                                                                                                          </div>
+
+                                                                                                                                                                                                                                                          < !--Instruções + Encargos-- >
+                                                                                                                                                                                                                                                          <div class="row" style = "align-items:stretch;" >
+                                                                                                                                                                                                                                                            <div class="instrucoes-area" >
+                                                                                                                                                                                                                                                              <div class="lbl" > Instru & ccedil;& otilde; es(Texto de responsabilidade do Benefici & aacute;rio)</div>
+                                                                                                                                                                                                                                                                </div>
+                                                                                                                                                                                                                                                                < div class="encargos" >
+                                                                                                                                                                                                                                                                  <div class="encargo-row" > <div class="lbl" > (=) Desconto / Abatimento < /div><div class="val val-right">&nbsp;</div > </div>
+                                                                                                                                                                                                                                                                    < div class="encargo-row" > <div class="lbl" > (+) Juros / Multa < /div><div class="val val-right">&nbsp;</div > </div>
+                                                                                                                                                                                                                                                                      < div class="encargo-row" > <div class="lbl" > (+) Outros Acr & eacute; scimos < /div><div class="val val-right">&nbsp;</div > </div>
+                                                                                                                                                                                                                                                                        < div class="encargo-row" > <div class="lbl" > (=) Valor Cobrado < /div><div class="val val-right">&nbsp;</div > </div>
+                                                                                                                                                                                                                                                                          </div>
+                                                                                                                                                                                                                                                                          </div>
+
+                                                                                                                                                                                                                                                                          < !--Pagador -->
+                                                                                                                                                                                                                                                                            <div class="row" style = "border-top:1px solid #d0d0d0;" >
+                                                                                                                                                                                                                                                                              <div class="cell" style = "flex:1;" >
+                                                                                                                                                                                                                                                                                <div class="lbl" > Nome do Pagador / CPF - CNPJ / Endere & ccedil;o </div>
+                                                                                                                                                                                                                                                                                  < div class="val" style = "margin-top:3px;" > ${ cliente.nome } & mdash; ${ docDisplay } </div>
+                                                                                                                                                                                                                                                                                    < div style = "font-size:10px; color:#444; margin-top:2px;" > ${ enderecoCompleto } </div>
+                                                                                                                                                                                                                                                                                      </div>
+                                                                                                                                                                                                                                                                                      </div>
+
+                                                                                                                                                                                                                                                                                      < !--Beneficiário Final-- >
+                                                                                                                                                                                                                                                                                        <div class="row" >
+                                                                                                                                                                                                                                                                                          <div class="cell" style = "flex:1;" >
+                                                                                                                                                                                                                                                                                            <div class="lbl" > Nome do <u>Benefici & aacute;rio Final < /u> / CPF - CNPJ / Endere & ccedil; o </div>
+                                                                                                                                                                                                                                                                                              < div class="val" style = "color:#555;" > ${ config.descricao || '&mdash;' } </div>
+                                                                                                                                                                                                                                                                                                </div>
+                                                                                                                                                                                                                                                                                                </div>
+
+                                                                                                                                                                                                                                                                                                < !--BARCODE -->
+                                                                                                                                                                                                                                                                                                  <div class="barcode-area" >
+                                                                                                                                                                                                                                                                                                    ${ barcodeSvg }
+<div style="font-family:'Courier New',monospace;font-size:11px;color:#444;text-align:center;margin-top:8px;letter-spacing:2px;word-spacing:6px;max-width:580px;margin-left:auto;margin-right:auto;" > ${ barcodeNumFormatado } </div>
   </div>
 
-  <!-- Local de Pagamento + Vencimento -->
-  <div class="row">
-    <div class="cell" style="flex:1;">
-      <div class="lbl">Local de Pagamento</div>
-      <div class="val">Pag&aacute;vel Preferencialmente na Rede Bradesco ou no Bradesco Expresso</div>
-    </div>
-    <div class="cell" style="flex:0 0 160px; align-items:flex-end;">
-      <div class="lbl">Vencimento</div>
-      <div class="val-lg val-right">${dataVenc}</div>
-    </div>
-  </div>
+  < div class="footer-auth" >
+    <span style="letter-spacing:1px;" >& larr;& mdash; 10mm </span>
+      < span style = "font-weight:700; font-size:10px;" > Autentica & ccedil;& atilde;o Mec & acirc; nica & mdash; Ficha de Compensa & ccedil;& atilde; o </span>
+        < span style = "letter-spacing:1px;" > 10mm & mdash;& rarr; </span>
+          </div>
 
-  <!-- Beneficiário + Agência -->
-  <div class="row">
-    <div class="cell" style="flex:1;">
-      <div class="lbl">Nome do Benefici&aacute;rio / CPF-CNPJ / Endere&ccedil;o</div>
-      <div class="val">${config.descricao || 'BENEFICI&Aacute;RIO'}</div>
-    </div>
-    <div class="cell" style="flex:0 0 200px; align-items:flex-end;">
-      <div class="lbl">Ag&ecirc;ncia / C&oacute;digo do Benefici&aacute;rio</div>
-      <div class="val val-right">${config.agencia || '0000'} / ${config.conta || '00000'}</div>
-    </div>
-  </div>
+          </div>
 
-  <!-- Data | Número Documento | Espécie | Aceite | Data Proc | Nosso-Número -->
-  <div class="row">
-    <div class="cell" style="flex:0 0 100px;">
-      <div class="lbl">Data do Documento</div>
-      <div class="val">${dataEmissao}</div>
-    </div>
-    <div class="cell" style="flex:0 0 120px;">
-      <div class="lbl">N&uacute;mero do Documento</div>
-      <div class="val val-mono">${boleto.seuNumero || '&mdash;'}</div>
-    </div>
-    <div class="cell" style="flex:0 0 70px;">
-      <div class="lbl">Esp&eacute;cie Doc.</div>
-      <div class="val">${boleto.especieDocumento || 'DM'}</div>
-    </div>
-    <div class="cell" style="flex:0 0 50px;">
-      <div class="lbl">Aceite</div>
-      <div class="val">N</div>
-    </div>
-    <div class="cell" style="flex:0 0 110px;">
-      <div class="lbl">Data Processamento</div>
-      <div class="val">${dataProcessamento}</div>
-    </div>
-    <div class="cell" style="flex:1; align-items:flex-end;">
-      <div class="lbl">Nosso-N&uacute;mero</div>
-      <div class="val-xl">${boleto.nossoNumero}</div>
-    </div>
-  </div>
-
-  <!-- Uso Banco | CIP | Carteira | Moeda | Quantidade | Valor | Valor do Documento -->
-  <div class="row">
-    <div class="cell" style="flex:0 0 80px;"><div class="lbl">Uso do Banco</div><div class="val">&nbsp;</div></div>
-    <div class="cell" style="flex:0 0 50px;"><div class="lbl">CIP</div><div class="val">&nbsp;</div></div>
-    <div class="cell" style="flex:0 0 70px;"><div class="lbl">Carteira</div><div class="val">${config.carteira || '09'}</div></div>
-    <div class="cell" style="flex:0 0 60px;"><div class="lbl">Moeda</div><div class="val">R$</div></div>
-    <div class="cell" style="flex:0 0 90px;"><div class="lbl">Quantidade</div><div class="val">&nbsp;</div></div>
-    <div class="cell" style="flex:0 0 90px;"><div class="lbl">Valor</div><div class="val">&nbsp;</div></div>
-    <div class="cell" style="flex:1; align-items:flex-end;">
-      <div class="lbl">Valor do Documento</div>
-      <div class="val-xl">R&nbsp;${valorFormatado}</div>
-    </div>
-  </div>
-
-  <!-- Informações + Encargos -->
-  <div class="row" style="align-items:stretch;">
-    <div class="instrucoes-area">
-      <div class="lbl">Informa&ccedil;&otilde;es de responsabilidade do benefici&aacute;rio</div>
-    </div>
-    <div class="encargos">
-      <div class="encargo-row"><div class="lbl">(=) Desconto / Abatimento</div><div class="val val-right">&nbsp;</div></div>
-      <div class="encargo-row"><div class="lbl">(+) Juros / Multa</div><div class="val val-right">&nbsp;</div></div>
-      <div class="encargo-row"><div class="lbl">(+) Outros Acr&eacute;scimos</div><div class="val val-right">&nbsp;</div></div>
-      <div class="encargo-row"><div class="lbl">(=) Valor Cobrado</div><div class="val val-right">&nbsp;</div></div>
-    </div>
-  </div>
-
-  <!-- Pagador -->
-  <div class="row" style="border-top:1px solid #d0d0d0;">
-    <div class="cell" style="flex:1;">
-      <div class="lbl">Nome do Pagador / CPF-CNPJ / Endere&ccedil;o</div>
-      <div class="val" style="margin-top:3px;">${cliente.nome} &mdash; ${docDisplay}</div>
-      <div style="font-size:10px; color:#444; margin-top:2px;">${enderecoCompleto}</div>
-    </div>
-  </div>
-
-  <div class="section-tag">RECIBO DO SACADO</div>
-</div>
-
-<!-- ========================= CUT LINE ========================= -->
-<div class="cut-line">&#9988; recorte aqui</div>
-
-<!-- ========================= FICHA DE COMPENSAÇÃO ========================= -->
-<div class="boleto-card">
-
-  <!-- HEADER -->
-  <div class="boleto-header">
-    <div class="header-logo">
-      <span class="logo-text">Bradesco</span>
-      <span class="banco-code">237-D</span>
-    </div>
-    <div class="header-linha">${linhaDigitavel}</div>
-  </div>
-
-  <!-- Local + Vencimento -->
-  <div class="row">
-    <div class="cell" style="flex:1;">
-      <div class="lbl">Local de Pagamento</div>
-      <div class="val">Pag&aacute;vel Preferencialmente na Rede Bradesco ou no Bradesco Expresso</div>
-    </div>
-    <div class="cell" style="flex:0 0 160px; align-items:flex-end;">
-      <div class="lbl">Vencimento</div>
-      <div class="val-lg val-right">${dataVenc}</div>
-    </div>
-  </div>
-
-  <!-- Beneficiário + Agência -->
-  <div class="row">
-    <div class="cell" style="flex:1;">
-      <div class="lbl">Nome do Benefici&aacute;rio / CPF-CNPJ / Endere&ccedil;o</div>
-      <div class="val">${config.descricao || 'BENEFICI&Aacute;RIO'}</div>
-    </div>
-    <div class="cell" style="flex:0 0 200px; align-items:flex-end;">
-      <div class="lbl">Ag&ecirc;ncia / C&oacute;digo do Benefici&aacute;rio</div>
-      <div class="val val-right">${config.agencia || '0000'} / ${config.conta || '00000'}</div>
-    </div>
-  </div>
-
-  <!-- Datas / Nosso Número -->
-  <div class="row">
-    <div class="cell" style="flex:0 0 100px;">
-      <div class="lbl">Data do Documento</div>
-      <div class="val">${dataEmissao}</div>
-    </div>
-    <div class="cell" style="flex:0 0 120px;">
-      <div class="lbl">N&uacute;mero do Documento</div>
-      <div class="val val-mono">${boleto.seuNumero || '&mdash;'}</div>
-    </div>
-    <div class="cell" style="flex:0 0 70px;">
-      <div class="lbl">Esp&eacute;cie Doc.</div>
-      <div class="val">${boleto.especieDocumento || 'DM'}</div>
-    </div>
-    <div class="cell" style="flex:0 0 50px;">
-      <div class="lbl">Aceite</div>
-      <div class="val">N</div>
-    </div>
-    <div class="cell" style="flex:0 0 110px;">
-      <div class="lbl">Data Processamento</div>
-      <div class="val">${dataProcessamento}</div>
-    </div>
-    <div class="cell" style="flex:1; align-items:flex-end;">
-      <div class="lbl">Nosso-N&uacute;mero</div>
-      <div class="val-xl">${boleto.nossoNumero}</div>
-    </div>
-  </div>
-
-  <!-- Uso Banco etc + Valor -->
-  <div class="row">
-    <div class="cell" style="flex:0 0 80px;"><div class="lbl">Uso do Banco</div><div class="val">&nbsp;</div></div>
-    <div class="cell" style="flex:0 0 50px;"><div class="lbl">CIP</div><div class="val">&nbsp;</div></div>
-    <div class="cell" style="flex:0 0 70px;"><div class="lbl">Carteira</div><div class="val">${config.carteira || '09'}</div></div>
-    <div class="cell" style="flex:0 0 60px;"><div class="lbl">Moeda</div><div class="val">R$</div></div>
-    <div class="cell" style="flex:0 0 90px;"><div class="lbl">Quantidade</div><div class="val">&nbsp;</div></div>
-    <div class="cell" style="flex:0 0 90px;"><div class="lbl">Valor</div><div class="val">&nbsp;</div></div>
-    <div class="cell" style="flex:1; align-items:flex-end;">
-      <div class="lbl">Valor do Documento</div>
-      <div class="val-xl">R&nbsp;${valorFormatado}</div>
-    </div>
-  </div>
-
-  <!-- Instruções + Encargos -->
-  <div class="row" style="align-items:stretch;">
-    <div class="instrucoes-area">
-      <div class="lbl">Instru&ccedil;&otilde;es (Texto de responsabilidade do Benefici&aacute;rio)</div>
-    </div>
-    <div class="encargos">
-      <div class="encargo-row"><div class="lbl">(=) Desconto / Abatimento</div><div class="val val-right">&nbsp;</div></div>
-      <div class="encargo-row"><div class="lbl">(+) Juros / Multa</div><div class="val val-right">&nbsp;</div></div>
-      <div class="encargo-row"><div class="lbl">(+) Outros Acr&eacute;scimos</div><div class="val val-right">&nbsp;</div></div>
-      <div class="encargo-row"><div class="lbl">(=) Valor Cobrado</div><div class="val val-right">&nbsp;</div></div>
-    </div>
-  </div>
-
-  <!-- Pagador -->
-  <div class="row" style="border-top:1px solid #d0d0d0;">
-    <div class="cell" style="flex:1;">
-      <div class="lbl">Nome do Pagador / CPF-CNPJ / Endere&ccedil;o</div>
-      <div class="val" style="margin-top:3px;">${cliente.nome} &mdash; ${docDisplay}</div>
-      <div style="font-size:10px; color:#444; margin-top:2px;">${enderecoCompleto}</div>
-    </div>
-  </div>
-
-  <!-- Beneficiário Final -->
-  <div class="row">
-    <div class="cell" style="flex:1;">
-      <div class="lbl">Nome do <u>Benefici&aacute;rio Final</u> / CPF-CNPJ / Endere&ccedil;o</div>
-      <div class="val" style="color:#555;">${config.descricao || '&mdash;'}</div>
-    </div>
-  </div>
-
-  <!-- BARCODE -->
-  <div class="barcode-area">
-    ${barcodeSvg}
-    <div class="barcode-num">${codigoBarras}</div>
-  </div>
-
-  <div class="footer-auth">
-    <span style="letter-spacing:1px;">&larr;&mdash; 10mm</span>
-    <span style="font-weight:700; font-size:10px;">Autentica&ccedil;&atilde;o Mec&acirc;nica &mdash; Ficha de Compensa&ccedil;&atilde;o</span>
-    <span style="letter-spacing:1px;">10mm &mdash;&rarr;</span>
-  </div>
-
-</div>
-
-<!-- PRINT BUTTON -->
-<button class="print-btn" onclick="window.print()">
+          < !--PRINT BUTTON-- >
+            <button class="print-btn" onclick = "window.print()" >
   &#128438; Imprimir / Salvar PDF
-</button>
+  </button>
 
-</div><!-- /.page -->
-</body>
-</html>`;
+  < /div><!-- /.page-- >
+  </body>
+  </html>`;
 
-    return Buffer.from(html);
+return Buffer.from(html);
   }
 
 }
